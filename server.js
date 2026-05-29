@@ -1,9 +1,10 @@
 const express = require('express');
 const pool = require('./db');
 const routes = require('./routes');
+require('dotenv').config()
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 5000;
 
 // Middleware for parsing data
 app.use(express.json());

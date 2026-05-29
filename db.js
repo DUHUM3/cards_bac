@@ -1,23 +1,25 @@
-// db.js
 const { Pool } = require('pg');
+require('dotenv').config();
 
-// Database connection setup
+
 const pool = new Pool({
-  user: 'new_user',        // 👈 New user
-  host: 'localhost',
-  database: 'cards_db',    // 👈 New database
-  password: '123456',      // 👈 Password
-  port: 5432,
+  connectionString: process.env.DATABASE_URL,
+  family: 4, // 👈 يجبر IPv4 فقط
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
-// Test database connection
+// Test connection
 pool.connect((err, client, release) => {
   if (err) {
     console.error('❌ Database connection error:', err.stack);
   } else {
-    console.log('✅ Successfully connected to the database');
+    console.log('✅ Connected to Supabase PostgreSQL');
     release();
   }
 });
 
 module.exports = pool;
+// welcome@778welcome@
+// https://wqfwcxmrvzlfbccjpepq.supabase.co

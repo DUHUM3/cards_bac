@@ -1,7 +1,20 @@
 const pool = require('../db');
+const crypto = require('crypto');
+
+// دالة لتوليد token فريد
+const generateToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+// دالة لحساب تاريخ انتهاء الصلاحية (بعد سنة من الآن)
+const getExpiryDate = () => {
+  const expiryDate = new Date();
+  expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+  return expiryDate;
+};
 
 const userController = {
-  // إنشاء مستخدم جديد
+  // إنشاء مستخدم جديد مع token
   createUser: async (req, res) => {
     const {
       full_name,
@@ -20,18 +33,24 @@ const userController = {
     }
 
     try {
-      // Insert new user
+      // توليد token وتاريخ انتهاء الصلاحية
+      const auth_token = generateToken();
+      const token_expiry = getExpiryDate();
+
+      // Insert new user with token fields
       const result = await pool.query(
         `INSERT INTO users
-        (full_name, phone, region, user_type, settings)
-        VALUES ($1, $2, $3, $4, $5)
+        (full_name, phone, region, user_type, settings, auth_token, token_expiry)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *`,
         [
           full_name,
           phone,
           region,
           user_type,
-          settings
+          settings,
+          auth_token,
+          token_expiry
         ]
       );
 
@@ -48,7 +67,16 @@ const userController = {
       res.status(201).json({
         success: true,
         message: 'User and wallet created successfully',
-        user: newUser,
+        user: {
+          id: newUser.id,
+          full_name: newUser.full_name,
+          phone: newUser.phone,
+          region: newUser.region,
+          user_type: newUser.user_type,
+          settings: newUser.settings,
+          auth_token: newUser.auth_token,
+          token_expiry: newUser.token_expiry
+        },
         wallet: walletResult.rows[0]
       });
 
@@ -71,10 +99,10 @@ const userController = {
     }
   },
 
-  // جلب جميع المستخدمين (بدون created_at و updated_at)
+  // جلب جميع المستخدمين (مع معلومات token)
   getAllUsers: async (req, res) => {
     try {
-      // جلب جميع المستخدمين مع معلومات محافظهم
+      // جلب جميع المستخدمين مع معلومات محافظهم والتوكن
       const result = await pool.query(
         `SELECT 
           u.id,
@@ -83,6 +111,8 @@ const userController = {
           u.region,
           u.user_type,
           u.settings,
+          u.auth_token,
+          u.token_expiry,
           COALESCE(w.balance, 0) as wallet_balance,
           w.id as wallet_id
         FROM users u
@@ -106,7 +136,7 @@ const userController = {
     }
   },
 
-  // جلب مستخدم محدد بال ID (بدون created_at و updated_at)
+  // جلب مستخدم محدد بال ID (مع معلومات token)
   getUserById: async (req, res) => {
     const { id } = req.params;
 
@@ -119,6 +149,8 @@ const userController = {
           u.region,
           u.user_type,
           u.settings,
+          u.auth_token,
+          u.token_expiry,
           COALESCE(w.balance, 0) as wallet_balance,
           w.id as wallet_id
         FROM users u
@@ -149,7 +181,107 @@ const userController = {
     }
   },
 
-  // تحديث بيانات مستخدم (بدون updated_at)
+  // تجديد token لمدة سنة كاملة
+  renewToken: async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      // التحقق من وجود المستخدم
+      const userExists = await pool.query(
+        'SELECT * FROM users WHERE id = $1',
+        [id]
+      );
+
+      if (userExists.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      // توليد token جديد وتاريخ انتهاء جديد
+      const newToken = generateToken();
+      const newExpiry = getExpiryDate();
+
+      // تحديث token وتاريخ الانتهاء
+      const result = await pool.query(
+        `UPDATE users 
+         SET auth_token = $1, token_expiry = $2
+         WHERE id = $3
+         RETURNING id, full_name, phone, auth_token, token_expiry`,
+        [newToken, newExpiry, id]
+      );
+
+      res.status(200).json({
+        success: true,
+        message: 'Token renewed successfully for one year',
+        user: result.rows[0]
+      });
+
+    } catch (error) {
+      console.error('❌ Error renewing token:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Server error',
+        error: error.message
+      });
+    }
+  },
+
+  // التحقق من صلاحية token
+  verifyToken: async (req, res) => {
+    const { token } = req.params;
+
+    try {
+      const result = await pool.query(
+        `SELECT 
+          id, 
+          full_name, 
+          phone, 
+          auth_token, 
+          token_expiry,
+          CASE 
+            WHEN token_expiry > NOW() THEN true 
+            ELSE false 
+          END as is_valid
+        FROM users 
+        WHERE auth_token = $1`,
+        [token]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Invalid token'
+        });
+      }
+
+      const user = result.rows[0];
+      const isValid = user.is_valid;
+
+      res.status(200).json({
+        success: true,
+        valid: isValid,
+        message: isValid ? 'Token is valid' : 'Token has expired',
+        user: {
+          id: user.id,
+          full_name: user.full_name,
+          phone: user.phone,
+          token_expiry: user.token_expiry
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Error verifying token:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Server error',
+        error: error.message
+      });
+    }
+  },
+
+  // تحديث بيانات مستخدم (بدون تغيير token)
   updateUser: async (req, res) => {
     const { id } = req.params;
     const {
@@ -182,7 +314,7 @@ const userController = {
         });
       }
 
-      // بناء استعلام التحديث ديناميكياً
+      // بناء استعلام التحديث ديناميكياً (بدون تحديث token)
       const updates = [];
       const values = [];
       let paramIndex = 1;
@@ -223,14 +355,14 @@ const userController = {
         UPDATE users 
         SET ${updates.join(', ')}
         WHERE id = $${paramIndex}
-        RETURNING *
+        RETURNING id, full_name, phone, region, user_type, settings, auth_token, token_expiry
       `;
 
       const result = await pool.query(query, values);
 
       res.status(200).json({
         success: true,
-        message: 'User updated successfully',
+        message: 'User updated successfully (token unchanged)',
         user: result.rows[0]
       });
 
@@ -271,7 +403,7 @@ const userController = {
         });
       }
 
-      // حذف المحفظة أولاً (بسببForeignKey)
+      // حذف المحفظة أولاً (بسبب ForeignKey)
       await pool.query('DELETE FROM wallets WHERE user_id = $1', [id]);
       
       // ثم حذف المستخدم
@@ -305,6 +437,8 @@ const userController = {
           u.region,
           u.user_type,
           u.settings,
+          u.auth_token,
+          u.token_expiry,
           COALESCE(w.balance, 0) as wallet_balance
         FROM users u
         LEFT JOIN wallets w ON u.id = w.user_id
