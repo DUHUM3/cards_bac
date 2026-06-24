@@ -2,13 +2,15 @@ const express = require('express');
 const router = express.Router();
 const cardController = require('../controllers/cardController');
 
+// =============== روتات إنشاء الكروت ===============
+
+// روت إنشاء كرت جديد
+router.post('/create', cardController.createCard);
+
 // =============== روتات تفعيل الكروت ===============
 
 // روت تفعيل كرت بواسطة username فقط (المطلوب)
 router.post('/activate', cardController.activateCard);
-
-// روت تفعيل كرت بواسطة التوكن (بديل)
-// router.post('/activate-by-token', cardController.activateCardByToken);
 
 // =============== روتات إدارة الكروت ===============
 

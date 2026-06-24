@@ -2,6 +2,230 @@ const { Pool } = require('pg');
 const pool = require('../db');
 
 /**
+ * إنشاء كرت جديد مع جميع الحقول المطلوبة
+ * @route POST /api/cards/create
+ * @body { 
+ *   username, 
+ *   password (اختياري), 
+ *   category_id, 
+ *   status, 
+ *   owner_id (اختياري), 
+ *   point_of_sale_id (اختياري),
+ *   created_at (سيتم تعيينه تلقائياً)
+ * }
+ */
+const createCard = async (req, res) => {
+    const { 
+        username, 
+        password = null,  // اختياري
+        category_id, 
+        status = 'available',  // الحالة الافتراضية
+        owner_id = null,  // اختياري
+        point_of_sale_id = null  // اختياري
+    } = req.body;
+
+    // 1. التحقق من الحقول المطلوبة
+    if (!username) {
+        return res.status(400).json({
+            success: false,
+            message: 'Username is required',
+            example: {
+                username: "CARD_123456",
+                password: "optional_password",
+                category_id: 1,
+                status: "available",
+                owner_id: null,
+                point_of_sale_id: null
+            }
+        });
+    }
+
+    if (!category_id) {
+        return res.status(400).json({
+            success: false,
+            message: 'Category ID is required'
+        });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // 2. التحقق من أن username غير موجود مسبقاً
+        const existingCard = await client.query(
+            `SELECT id, username FROM cards WHERE username = $1`,
+            [username]
+        );
+
+        if (existingCard.rows.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                success: false,
+                message: 'Card username already exists',
+                username: username
+            });
+        }
+
+        // 3. التحقق من أن category_id موجود
+        const categoryCheck = await client.query(
+            `SELECT id, name FROM categories WHERE id = $1`,
+            [category_id]
+        );
+
+        if (categoryCheck.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({
+                success: false,
+                message: 'Category not found',
+                category_id: category_id
+            });
+        }
+
+        // 4. التحقق من وجود owner_id إذا تم توفيره
+        if (owner_id) {
+            const ownerCheck = await client.query(
+                `SELECT id, full_name FROM users WHERE id = $1`,
+                [owner_id]
+            );
+
+            if (ownerCheck.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({
+                    success: false,
+                    message: 'Owner not found',
+                    owner_id: owner_id
+                });
+            }
+        }
+
+        // 5. التحقق من وجود point_of_sale_id إذا تم توفيره
+        if (point_of_sale_id) {
+            const sellerCheck = await client.query(
+                `SELECT id, full_name FROM users WHERE id = $1`,
+                [point_of_sale_id]
+            );
+
+            if (sellerCheck.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({
+                    success: false,
+                    message: 'Seller not found',
+                    point_of_sale_id: point_of_sale_id
+                });
+            }
+        }
+
+        // 6. التحقق من صحة حالة الكرت
+        const validStatuses = ['available', 'private', 'sold', 'expired'];
+        if (!validStatuses.includes(status)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid status. Allowed values: available, private, sold, expired',
+                provided_status: status
+            });
+        }
+
+        // 7. إنشاء الكرت الجديد
+        const result = await client.query(
+            `INSERT INTO cards (
+                username,
+                password,
+                category_id,
+                status,
+                owner_id,
+                point_of_sale_id,
+                is_activated,
+                created_at,
+                updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            RETURNING 
+                id,
+                username,
+                password,
+                category_id,
+                status,
+                owner_id,
+                point_of_sale_id,
+                is_activated,
+                created_at,
+                updated_at`,
+            [
+                username,
+                password,
+                category_id,
+                status,
+                owner_id,
+                point_of_sale_id,
+                false  // is_activated = false بشكل افتراضي
+            ]
+        );
+
+        const newCard = result.rows[0];
+
+        // 8. تسجيل العملية (اختياري)
+        // await client.query(
+        //     `INSERT INTO card_creation_logs (
+        //         card_id,
+        //         username,
+        //         category_id,
+        //         created_by,
+        //         metadata
+        //     ) VALUES ($1, $2, $3, $4, $5)`,
+        //     [
+        //         newCard.id,
+        //         username,
+        //         category_id,
+        //         req.user?.id || null,
+        //         JSON.stringify({
+        //             status: status,
+        //             owner_id: owner_id,
+        //             point_of_sale_id: point_of_sale_id,
+        //             has_password: !!password,
+        //             created_at: new Date().toISOString()
+        //         })
+        //     ]
+        // );
+
+        await client.query('COMMIT');
+
+        // 9. إرجاع بيانات الكرت المُنشأ
+        res.status(201).json({
+            success: true,
+            message: 'Card created successfully',
+            data: {
+                card: {
+                    id: newCard.id,
+                    username: newCard.username,
+                    password: newCard.password,
+                    category_id: newCard.category_id,
+                    status: newCard.status,
+                    owner_id: newCard.owner_id,
+                    point_of_sale_id: newCard.point_of_sale_id,
+                    is_activated: newCard.is_activated,
+                    created_at: newCard.created_at,
+                    updated_at: newCard.updated_at
+                },
+                category: categoryCheck.rows[0].name,
+                created_by: req.user?.id || 'system'
+            }
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('❌ Error creating card:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while creating card',
+            error: error.message
+        });
+    } finally {
+        client.release();
+    }
+};
+
+/**
  * تفعيل كرت باستخدام username الكرت في الـ Body و token المستخدم في الـ Header
  * @route POST /api/cards/activate
  * @header Authorization: Bearer {token}
@@ -105,22 +329,24 @@ const activateCard = async (req, res) => {
 
         const updatedCard = updateResult.rows[0];
 
-        // 8. تسجيل العملية
+        // 8. تسجيل العملية (اختياري)
         // await client.query(
-        //     `INSERT INTO transactions (
-        //         user_id, card_id, operation_type, amount, status, description, metadata
-        //     ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        //     `INSERT INTO card_activation_logs (
+        //         card_id,
+        //         username,
+        //         user_id,
+        //         activation_method,
+        //         metadata
+        //     ) VALUES ($1, $2, $3, $4, $5)`,
         //     [
-        //         user.id,
         //         updatedCard.id,
-        //         'activate',
-        //         updatedCard.selling_price || 0,
-        //         'completed',
-        //         `Card ${username} activated by user ID: ${user.id}`,
+        //         username,
+        //         user.id,
+        //         'by_token',
         //         JSON.stringify({
-        //             username: username,
-        //             user_id: user.id,
-        //             activation_method: 'by_token_header'
+        //             user_name: user.full_name,
+        //             user_type: user.user_type,
+        //             activated_at: new Date().toISOString()
         //         })
         //     ]
         // );
@@ -164,6 +390,7 @@ const activateCard = async (req, res) => {
 };
 
 module.exports = {
+    createCard,
     activateCard,
     // ... باقي الدوال
 };
